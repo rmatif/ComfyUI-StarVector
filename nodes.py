@@ -11,6 +11,8 @@ import numpy as np
 import folder_paths
 from PIL import Image
 
+from .model_resources import ModelResourceError, resolve_model_resource
+
 # Register the model folder
 VECTOR_MODELS_DIR = os.path.join(folder_paths.models_dir, "vector")
 os.makedirs(VECTOR_MODELS_DIR, exist_ok=True)
@@ -51,6 +53,13 @@ class StarVectorModelLoader:
                     "default": "float16"
                 }),
             },
+            "optional": {
+                "model_path": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Local model directory or repository TAR. CustomComfy AIRs are supported."
+                }),
+            },
         }
     
     RETURN_TYPES = ("STARVECTOR_MODEL",)
@@ -58,9 +67,8 @@ class StarVectorModelLoader:
     FUNCTION = "load_model"
     CATEGORY = "StarVector"
     
-    def load_model(self, model_name, device, dtype):
-        from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
-        import json
+    def load_model(self, model_name, device, dtype, model_path=""):
+        from transformers import AutoModelForCausalLM, AutoConfig
 
         # Determine device
         if device == "auto":
@@ -74,20 +82,32 @@ class StarVectorModelLoader:
         }
         torch_dtype = dtype_map[dtype]
 
-        # Get the HuggingFace model path
+        # Get the HuggingFace model path used only by the legacy online fallback.
         hf_model_path = self.MODELS[model_name]
 
         # Set local directory to download model to a named subdirectory
         local_dir = os.path.join(VECTOR_MODELS_DIR, model_name)
         os.makedirs(local_dir, exist_ok=True)
 
-        print(f"[StarVector] Loading model: {hf_model_path}")
-        print(f"[StarVector] Local directory: {local_dir}")
-        print(f"[StarVector] Device: {device}, dtype: {dtype}")
+        resource_path = model_path.strip()
+        if resource_path:
+            try:
+                resolved_model_path = resolve_model_resource(
+                    resource_path,
+                    os.path.join(VECTOR_MODELS_DIR, ".resource_cache"),
+                )
+            except ModelResourceError as error:
+                raise RuntimeError(f"Invalid StarVector model resource: {error}") from error
+            load_path = resolved_model_path
+            model_exists = True
+            print(f"[StarVector] Loading declared local resource: {resource_path}")
+        else:
+            load_path = local_dir
+            model_exists = os.path.exists(os.path.join(local_dir, "config.json"))
 
-        # Check if model already exists locally
-        config_path = os.path.join(local_dir, "config.json")
-        model_exists = os.path.exists(config_path)
+        print(f"[StarVector] Model: {hf_model_path}")
+        print(f"[StarVector] Resolved model directory: {load_path}")
+        print(f"[StarVector] Device: {device}, dtype: {dtype}")
 
         # Save current environment variables
         old_offline = os.environ.get('HF_HUB_OFFLINE')
@@ -104,35 +124,35 @@ class StarVectorModelLoader:
 
                 # Load config
                 config = AutoConfig.from_pretrained(
-                    local_dir,
+                    load_path,
                     trust_remote_code=True,
                     local_files_only=True,
                 )
 
                 # Pass parent model directory to starvector via kwargs
-                print(f"[StarVector] Loading model with parent_model_dir={local_dir}")
+                print(f"[StarVector] Loading model with parent_model_dir={load_path}")
 
                 model = AutoModelForCausalLM.from_pretrained(
-                    local_dir,
+                    load_path,
                     config=config,
                     torch_dtype=torch_dtype,
                     trust_remote_code=True,
                     local_files_only=True,
-                    parent_model_dir=local_dir,  # Pass to starvector model (no underscore)
+                    parent_model_dir=load_path,  # Pass to starvector model (no underscore)
                 )
             else:
+                if _offline_mode_enabled(old_offline) or _offline_mode_enabled(old_transformers_offline):
+                    raise RuntimeError(
+                        f"StarVector model is not installed at {local_dir} and offline mode is enabled. "
+                        "Provide model_path or install the complete repository snapshot locally."
+                    )
+
                 # Download to local directory
                 print(f"[StarVector] Downloading model to local directory...")
                 print(f"[StarVector] Note: This will download the model and tokenizer...")
 
-                # Ensure we're online for download
-                if 'HF_HUB_OFFLINE' in os.environ:
-                    del os.environ['HF_HUB_OFFLINE']
-                if 'TRANSFORMERS_OFFLINE' in os.environ:
-                    del os.environ['TRANSFORMERS_OFFLINE']
-
-                # Download the model with parent directory info
-                print(f"[StarVector] Downloading with parent_model_dir={local_dir}")
+                # Keep the legacy online behavior for desktop users. Production
+                # workers should provide model_path and never enter this branch.
                 model = AutoModelForCausalLM.from_pretrained(
                     hf_model_path,
                     torch_dtype=torch_dtype,
@@ -151,7 +171,7 @@ class StarVectorModelLoader:
             raise RuntimeError(
                 f"Failed to load StarVector model. "
                 f"Error: {e}\n\n"
-                f"Please ensure the model files are fully downloaded to: {local_dir}\n"
+                f"Please ensure the model files are available at: {load_path}\n"
                 f"The model requires local tokenizer files to avoid accessing the gated bigcode repository."
             )
         finally:
@@ -186,6 +206,10 @@ class StarVectorModelLoader:
         }
         
         return (model_dict,)
+
+
+def _offline_mode_enabled(value):
+    return value is not None and value.strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 class StarVectorImage2SVG:

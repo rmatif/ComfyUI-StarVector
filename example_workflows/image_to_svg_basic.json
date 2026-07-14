@@ -47,7 +47,7 @@
       "properties": {
         "Node name for S&R": "StarVectorModelLoader"
       },
-      "widgets_values": ["starvector-1b-im2svg", "auto", "float16"]
+      "widgets_values": ["starvector-1b-im2svg", "auto", "float16", ""]
     },
     {
       "id": 3,

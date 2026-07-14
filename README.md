@@ -9,6 +9,7 @@ Custom nodes for generating SVG files from images using [StarVector](https://hug
 
 - **Image to SVG conversion** using StarVector-1B or StarVector-8B models
 - **Automatic model downloading** from HuggingFace to `models/vector/<model-name>/`
+- **Offline model resources** from a local Hugging Face repository directory or TAR archive
 - **SVG Preview** - Rasterize SVGs to preview them in ComfyUI
 - **Save/Load SVG** - Full file I/O support
 - **String conversion** - Convert between SVG data and strings
@@ -72,6 +73,7 @@ Loads a StarVector model for SVG generation.
 - `model_name`: Choose between `starvector-1b-im2svg` (faster) or `starvector-8b-im2svg` (higher quality)
 - `device`: `auto`, `cuda`, or `cpu`
 - `dtype`: `float16`, `float32`, or `bfloat16`
+- `model_path` (optional): Complete local model directory or repository TAR archive. CustomComfy resource AIRs can be used directly.
 
 **Outputs:**
 - `model`: The loaded StarVector model
@@ -149,6 +151,44 @@ Utility nodes to convert between SVG data objects and raw strings.
 | starvector-8b-im2svg | 8 Billion | Best | Slower | ~16GB |
 
 Models are automatically downloaded to `ComfyUI/models/vector/<model-name>/` on first use (e.g., `starvector-1b-im2svg/`).
+
+## Offline and CustomComfy Usage
+
+Workers without Hugging Face access can provide the complete model repository through `model_path`.
+The value may be either:
+
+- An extracted Hugging Face repository directory containing `config.json` and all model/tokenizer files.
+- A repository TAR archive. Archives are extracted once into `ComfyUI/models/vector/.resource_cache/` and reused by the running ComfyUI installation.
+
+For a CustomComfy job, declare a pinned repository snapshot AIR as a resource and put the exact
+same AIR in the loader's `model_path` input. The worker rewrites it to the mounted resource path:
+
+```json
+{
+  "resources": [
+    "urn:air:starvector:repository:huggingface:starvector/starvector-1b-im2svg@<commit-sha>.tar"
+  ],
+  "workflow": {
+    "1": {
+      "class_type": "StarVectorModelLoader",
+      "inputs": {
+        "model_name": "starvector-1b-im2svg",
+        "device": "auto",
+        "dtype": "float16",
+        "model_path": "urn:air:starvector:repository:huggingface:starvector/starvector-1b-im2svg@<commit-sha>.tar"
+      }
+    }
+  }
+}
+```
+
+When `model_path` is supplied, loading is strictly local (`local_files_only=True`). An invalid,
+missing, or incomplete resource fails immediately and never falls back to a network download.
+Set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` on production workers as defense in depth.
+
+The patched StarVector dependency bundled by this node supports a fully local
+`starvector-1b-im2svg` snapshot. The 8B model still resolves its StarCoder2 base model separately
+and is not guaranteed to be fully offline without that base model in the Hugging Face cache.
 
 ## Tips
 
