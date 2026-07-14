@@ -12,6 +12,10 @@ import folder_paths
 from PIL import Image
 
 from .model_resources import ModelResourceError, resolve_model_resource
+from .starcoder2_offline import (
+    install_local_siglip_patch,
+    install_local_starcoder2_patch,
+)
 
 # Register the model folder
 VECTOR_MODELS_DIR = os.path.join(folder_paths.models_dir, "vector")
@@ -131,6 +135,12 @@ class StarVectorModelLoader:
 
                 # Pass parent model directory to starvector via kwargs
                 print(f"[StarVector] Loading model with parent_model_dir={load_path}")
+
+                # StarVector 8B otherwise downloads bigcode/starcoder2-7b while
+                # constructing its inner model, even though the outer checkpoint
+                # already contains the complete weights.
+                install_local_starcoder2_patch()
+                install_local_siglip_patch()
 
                 model = AutoModelForCausalLM.from_pretrained(
                     load_path,

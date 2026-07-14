@@ -186,9 +186,9 @@ When `model_path` is supplied, loading is strictly local (`local_files_only=True
 missing, or incomplete resource fails immediately and never falls back to a network download.
 Set `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` on production workers as defense in depth.
 
-The patched StarVector dependency bundled by this node supports a fully local
-`starvector-1b-im2svg` snapshot. The 8B model still resolves its StarCoder2 base model separately
-and is not guaranteed to be fully offline without that base model in the Hugging Face cache.
+Both model variants load fully offline from their complete StarVector repository snapshots. For
+the 8B variant, the node constructs the bundled StarCoder2 and SigLIP modules locally before the
+outer checkpoint assigns their weights, so neither base repository is downloaded at runtime.
 
 ## Tips
 
