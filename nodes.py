@@ -12,8 +12,13 @@ import folder_paths
 from PIL import Image
 
 from .model_resources import ModelResourceError, resolve_model_resource
+from .transformers_compat import (
+    prepare_legacy_pretrained_models,
+    restore_starvector_tied_weights,
+)
 from .starcoder2_offline import (
     install_local_siglip_patch,
+    install_local_starvector_v2_patch,
     install_local_starcoder2_patch,
 )
 
@@ -72,6 +77,7 @@ class StarVectorModelLoader:
     CATEGORY = "StarVector"
     
     def load_model(self, model_name, device, dtype, model_path=""):
+        prepare_legacy_pretrained_models()
         from transformers import AutoModelForCausalLM, AutoConfig
 
         # Determine device
@@ -141,6 +147,7 @@ class StarVectorModelLoader:
                 # already contains the complete weights.
                 install_local_starcoder2_patch()
                 install_local_siglip_patch()
+                install_local_starvector_v2_patch()
 
                 model = AutoModelForCausalLM.from_pretrained(
                     load_path,
@@ -171,6 +178,13 @@ class StarVectorModelLoader:
                     local_dir_use_symlinks=False,
                     parent_model_dir=local_dir,  # Pass to starvector model (no underscore)
                 )
+
+            # Transformers 5 no longer discovers nested tied weights while
+            # loading this legacy remote-code wrapper. The StarCoder checkpoint
+            # intentionally stores only its input embedding, so explicitly
+            # restore the shared LM head before generation.
+            restore_starvector_tied_weights(model)
+            print("[StarVector] Restored tied language-model embeddings")
 
         except Exception as e:
             print(f"[StarVector] Error loading model: {e}")
@@ -275,6 +289,10 @@ class StarVectorImage2SVG:
         # Generate SVG
         with torch.no_grad():
             raw_svg = starvector.generate_im2svg(batch, max_length=max_length)[0]
+
+        print(f"[StarVector] Generated SVG length: {len(raw_svg)}")
+        if not raw_svg.strip():
+            raise RuntimeError("StarVector generated an empty SVG")
         
         # Create SVG data structure
         svg_data = {
@@ -482,10 +500,18 @@ class SaveSVG:
     
     def save_svg(self, svg, filename_prefix, optimize=True):
         svg_string = svg["svg_string"]
+        generated_length = len(svg_string)
         
         # Optimize SVG if requested
         if optimize:
             svg_string = self._optimize_svg(svg_string)
+
+        print(
+            f"[StarVector] Saving SVG length: {len(svg_string)} "
+            f"(generated: {generated_length})"
+        )
+        if not svg_string:
+            raise RuntimeError("Refusing to save an empty StarVector SVG")
         
         # Generate unique filename
         full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(

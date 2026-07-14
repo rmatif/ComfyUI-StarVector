@@ -2,6 +2,39 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+
+def _load_local_siglip_processor(processor_class, model_dir):
+    """Load the snapshot's real SigLIP preprocessing configuration.
+
+    Transformers 5 prefers ``processor_config.json`` over
+    ``preprocessor_config.json``. StarVector 8B's former file only declares the
+    processor type, which either fails auto-detection or silently falls back to
+    SigLIP's 224px defaults. The checkpoint was trained with the complete 384px
+    configuration stored in ``preprocessor_config.json``.
+    """
+
+    config_path = Path(model_dir) / "preprocessor_config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"StarVector's local SigLIP configuration is missing: {config_path}"
+        )
+    with config_path.open(encoding="utf-8") as config_file:
+        return processor_class.from_dict(json.load(config_file))
+
+
+def _get_siglip_vision_transformer(model):
+    """Return the checkpoint-compatible SigLIP vision transformer.
+
+    Transformers 4 wraps the transformer in ``SiglipVisionModel.vision_model``.
+    Transformers 5 exposes that same module directly on ``SiglipVisionModel``.
+    StarVector checkpoints use the unwrapped parameter names in both cases.
+    """
+
+    return getattr(model, "vision_model", model)
+
 
 def install_local_siglip_patch() -> None:
     """Build StarVector 8B's SigLIP encoder without downloading its base repo."""
@@ -42,15 +75,46 @@ def install_local_siglip_patch() -> None:
             hidden_act="gelu_pytorch_tanh",
         )
         with init_empty_weights():
-            self.visual_encoder = SiglipVisionModel(vision_config).vision_model
-        self.processor = SiglipImageProcessor.from_pretrained(
-            parent_model_dir,
-            local_files_only=True,
+            siglip_model = SiglipVisionModel(vision_config)
+            self.visual_encoder = _get_siglip_vision_transformer(siglip_model)
+        self.processor = _load_local_siglip_processor(
+            SiglipImageProcessor, parent_model_dir
         )
         print("[StarVector] Local SigLIP vision structure is ready")
 
     image_encoder_class.__init__ = local_init
     image_encoder_class._comfy_local_model_patch = True
+
+
+def install_local_starvector_v2_patch() -> None:
+    """Reuse the already configured local processor in StarVector 8B.
+
+    The upstream V2 wrapper constructs ``ImageEncoder`` (and its processor) in
+    ``StarVectorBase`` and then unnecessarily replaces that processor through
+    ``AutoImageProcessor``. Transformers 5 resolves the snapshot's minimal
+    ``processor_config.json`` first and rejects it. Keep the processor built
+    from the explicit local preprocessing configuration instead.
+    """
+
+    from starvector.model.models import starvector_v2
+    from starvector.model.models.starvector_base import StarVectorBase
+
+    model_class = starvector_v2.StarVectorStarCoder2
+    if getattr(model_class, "_comfy_local_processor_patch", False):
+        return
+
+    original_init = model_class.__init__
+
+    def local_init(self, config, **kwargs):
+        if not kwargs.get("parent_model_dir"):
+            return original_init(self, config, **kwargs)
+
+        StarVectorBase.__init__(self, config, **kwargs)
+        self.processor = self.image_encoder.processor
+        print("[StarVector] Reusing local SigLIP image processor")
+
+    model_class.__init__ = local_init
+    model_class._comfy_local_processor_patch = True
 
 
 def install_local_starcoder2_patch() -> None:

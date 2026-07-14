@@ -1,5 +1,7 @@
+import json
 from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -7,7 +9,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from starcoder2_offline import install_local_siglip_patch, install_local_starcoder2_patch
+from starcoder2_offline import (
+    _get_siglip_vision_transformer,
+    _load_local_siglip_processor,
+    install_local_siglip_patch,
+    install_local_starvector_v2_patch,
+    install_local_starcoder2_patch,
+)
 
 
 class FakeTokenizer:
@@ -45,6 +53,59 @@ class FakeInnerModel:
 
 
 class Starcoder2OfflineTests(unittest.TestCase):
+    def test_starvector_v2_reuses_processor_from_local_image_encoder(self):
+        original_calls = []
+
+        def original_init(self, config, **kwargs):
+            original_calls.append((config, kwargs))
+
+        fake_class = type("StarVectorStarCoder2", (), {"__init__": original_init})
+        fake_module = types.SimpleNamespace(StarVectorStarCoder2=fake_class)
+        processor = object()
+
+        class FakeBase:
+            def __init__(self, config, **kwargs):
+                self.image_encoder = types.SimpleNamespace(processor=processor)
+
+        models_package = types.ModuleType("starvector.model.models")
+        models_package.starvector_v2 = fake_module
+        base_module = types.SimpleNamespace(StarVectorBase=FakeBase)
+        modules = {
+            "starvector.model.models": models_package,
+            "starvector.model.models.starvector_v2": fake_module,
+            "starvector.model.models.starvector_base": base_module,
+        }
+        with patch.dict(sys.modules, modules):
+            install_local_starvector_v2_patch()
+            model = fake_class.__new__(fake_class)
+            model.__init__(object(), parent_model_dir="/models/starvector-8b")
+
+        self.assertEqual(original_calls, [])
+        self.assertIs(model.processor, processor)
+
+    def test_siglip_processor_uses_preprocessor_config(self):
+        class FakeProcessor:
+            @classmethod
+            def from_dict(cls, config):
+                return config
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            config = {"size": {"height": 384, "width": 384}}
+            Path(model_dir, "preprocessor_config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+
+            processor = _load_local_siglip_processor(FakeProcessor, model_dir)
+
+        self.assertEqual(processor, config)
+
+    def test_siglip_transformer_supports_transformers_4_and_5_layouts(self):
+        direct_model = object()
+        wrapped_model = types.SimpleNamespace(vision_model=direct_model)
+
+        self.assertIs(_get_siglip_vision_transformer(direct_model), direct_model)
+        self.assertIs(_get_siglip_vision_transformer(wrapped_model), direct_model)
+
     def test_local_parent_constructs_siglip_without_from_pretrained(self):
         original_calls = []
         fake_class = type(
@@ -67,10 +128,14 @@ class Starcoder2OfflineTests(unittest.TestCase):
                 self.vision_model = types.SimpleNamespace(config=config)
 
         processor = object()
+
+        class FakeProcessor:
+            @classmethod
+            def from_dict(cls, config):
+                return processor
+
         transformers = types.SimpleNamespace(
-            SiglipImageProcessor=types.SimpleNamespace(
-                from_pretrained=lambda *args, **kwargs: processor
-            ),
+            SiglipImageProcessor=FakeProcessor,
             SiglipVisionConfig=FakeSiglipVisionConfig,
             SiglipVisionModel=FakeSiglipVisionModel,
         )
@@ -98,10 +163,15 @@ class Starcoder2OfflineTests(unittest.TestCase):
             "accelerate": accelerate,
             "transformers": transformers,
         }
-        with patch.dict(sys.modules, modules):
-            install_local_siglip_patch()
-            model = fake_class.__new__(fake_class)
-            model.__init__(fake_config, parent_model_dir="/models/starvector-8b")
+        with tempfile.TemporaryDirectory() as model_dir:
+            Path(model_dir, "preprocessor_config.json").write_text(
+                json.dumps({"size": {"height": 384, "width": 384}}),
+                encoding="utf-8",
+            )
+            with patch.dict(sys.modules, modules):
+                install_local_siglip_patch()
+                model = fake_class.__new__(fake_class)
+                model.__init__(fake_config, parent_model_dir=model_dir)
 
         self.assertEqual(original_calls, [])
         self.assertEqual(model.visual_encoder.config.hidden_size, 1024)
