@@ -12,6 +12,7 @@ import folder_paths
 from PIL import Image
 
 from .model_resources import ModelResourceError, resolve_model_resource
+from .svg_validation import require_valid_svg
 from .transformers_compat import (
     prepare_legacy_pretrained_models,
     restore_starvector_tied_weights,
@@ -291,8 +292,7 @@ class StarVectorImage2SVG:
             raw_svg = starvector.generate_im2svg(batch, max_length=max_length)[0]
 
         print(f"[StarVector] Generated SVG length: {len(raw_svg)}")
-        if not raw_svg.strip():
-            raise RuntimeError("StarVector generated an empty SVG")
+        require_valid_svg(raw_svg)
         
         # Create SVG data structure
         svg_data = {
